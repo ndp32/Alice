@@ -1,5 +1,6 @@
 """Floating NSPanel control panel for Kokoro Reader."""
 
+import objc
 from AppKit import (
     NSBackingStoreBuffered,
     NSButton,
@@ -25,7 +26,7 @@ class _PanelDelegate(NSObject):
     """Objective-C delegate that forwards button/window events to Python callbacks."""
 
     def init(self):
-        self = super().init()
+        self = objc.super(_PanelDelegate, self).init()
         if self is None:
             return None
         self._on_prev = None

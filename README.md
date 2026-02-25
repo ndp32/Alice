@@ -12,7 +12,7 @@ A lightweight macOS menubar app that reads selected text aloud using local AI vo
 
 **Free:** Run via Docker:
 ```bash
-docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
+docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4
 ```
 
 ### 2. Install Kokoro Reader
@@ -26,6 +26,12 @@ macOS will prompt you. Go to **System Settings → Privacy & Security → Access
 
 ### 4. Use It
 Select text anywhere. Press **⌥⇧Z**. A control panel appears with ⏮ ⏯ ⏭ buttons.
+
+## Troubleshooting
+- If you see `405 Method Not Allowed` on `GET /v1/audio/speech`, that's expected for browser-style requests. TTS generation must use `POST`.
+- First synthesis request may be slower while the model warms up.
+- Ensure Accessibility permission is granted: **System Settings -> Privacy & Security -> Accessibility**.
+- If audio fails, verify nothing else is using port `8880`.
 
 ## Controls
 - **⌥⇧Z** — Read selected text / dismiss panel

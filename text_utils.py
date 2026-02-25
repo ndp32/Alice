@@ -20,7 +20,8 @@ def split_sentences(text: str) -> list[str]:
     """
     # Split on sentence-ending punctuation followed by space, or on newlines.
     # The regex captures the delimiter so we can re-attach punctuation.
-    parts = re.split(r'(?<=[.!?])\s+|\n+', text)
+    normalized = re.sub(r"\n{2,}", "\n", text)
+    parts = re.split(r'(?<=[.!?])\s+|\n+', normalized)
     return [s.strip() for s in parts if s.strip()]
 
 
@@ -39,6 +40,12 @@ def _write_clipboard(text: str | None) -> None:
         pb.setString_forType_(text, NSStringPboardType)
 
 
+def _clipboard_change_count() -> int:
+    """Return the current macOS pasteboard change counter."""
+    pb = NSPasteboard.generalPasteboard()
+    return int(pb.changeCount())
+
+
 def _simulate_cmd_c() -> None:
     """Simulate ⌘C keypress using Quartz CGEvents."""
     # keycode 8 = 'c' on US keyboard
@@ -50,20 +57,25 @@ def _simulate_cmd_c() -> None:
     CGEventPost(kCGHIDEventTap, key_up)
 
 
-def get_selected_text() -> str | None:
+def get_selected_text(copy_delay_s: float = 0.15, min_chars: int = 1) -> str | None:
     """Simulate ⌘C, read clipboard, restore previous clipboard contents.
 
     Returns the selected text, or None if nothing was selected.
     """
     # Save current clipboard
     original = _read_clipboard()
-
-    # Clear clipboard so we can detect if ⌘C actually copied something
-    _write_clipboard(None)
+    before_count = _clipboard_change_count()
 
     # Simulate ⌘C
     _simulate_cmd_c()
-    time.sleep(0.15)  # wait for copy to complete
+    # Poll briefly for clipboard mutation from copy action.
+    changed = False
+    deadline = time.time() + copy_delay_s
+    while time.time() < deadline:
+        if _clipboard_change_count() != before_count:
+            changed = True
+            break
+        time.sleep(0.01)
 
     # Read what was copied
     selected = _read_clipboard()
@@ -71,8 +83,16 @@ def get_selected_text() -> str | None:
     # Restore original clipboard
     _write_clipboard(original)
 
-    # If clipboard is still empty after ⌘C, nothing was selected
-    if not selected:
+    # If clipboard is empty/whitespace after ⌘C, nothing was selected.
+    if not selected or not selected.strip():
         return None
 
-    return selected
+    # No pasteboard change usually means there was no copyable selection.
+    if not changed:
+        return None
+
+    cleaned = selected.strip()
+    if len(cleaned) < min_chars:
+        return None
+
+    return cleaned

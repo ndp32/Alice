@@ -2,7 +2,7 @@
 
 import threading
 
-from pynput.keyboard import GlobalHotKeys
+from pynput import keyboard
 
 from config import HOTKEY_COMBO
 
@@ -17,6 +17,9 @@ class HotkeyListener:
         self._processing = False
         self._lock = threading.Lock()
         self._listener = None
+        self._hotkey = keyboard.HotKey(
+            keyboard.HotKey.parse(HOTKEY_COMBO), self._on_hotkey
+        )
 
     def _on_hotkey(self):
         with self._lock:
@@ -31,7 +34,14 @@ class HotkeyListener:
                 self._processing = False
 
     def start(self) -> None:
-        self._listener = GlobalHotKeys({HOTKEY_COMBO: self._on_hotkey})
+        def for_canonical(handler):
+            # Darwin listener may pass extra metadata args; ignore extras.
+            return lambda key, *args: handler(self._listener.canonical(key))
+
+        self._listener = keyboard.Listener(
+            on_press=for_canonical(self._hotkey.press),
+            on_release=for_canonical(self._hotkey.release),
+        )
         self._listener.daemon = True
         self._listener.start()
 

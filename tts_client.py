@@ -1,11 +1,19 @@
-"""Kokoro TTS API client with dual endpoint fallback."""
+"""Kokoro TTS API client with endpoint fallback and health checks."""
 
 import requests
 
-from config import KOKORO_ENDPOINTS
+from config import (
+    HEALTH_TIMEOUT_CONNECT_S,
+    HEALTH_TIMEOUT_READ_S,
+    KOKORO_ENDPOINTS,
+    KOKORO_HEALTH_URLS,
+    REQUEST_TIMEOUT_CONNECT_S,
+    REQUEST_TIMEOUT_READ_S,
+)
 
-# Timeouts: 3s connect, 30s read
-TIMEOUT = (3, 30)
+# Timeouts
+SYNTH_TIMEOUT = (REQUEST_TIMEOUT_CONNECT_S, REQUEST_TIMEOUT_READ_S)
+HEALTH_TIMEOUT = (HEALTH_TIMEOUT_CONNECT_S, HEALTH_TIMEOUT_READ_S)
 
 
 def synthesize(text: str, voice: str, speed: float) -> bytes | None:
@@ -32,7 +40,7 @@ def synthesize(text: str, voice: str, speed: float) -> bytes | None:
             }
 
         try:
-            resp = requests.post(url, json=payload, timeout=TIMEOUT)
+            resp = requests.post(url, json=payload, timeout=SYNTH_TIMEOUT)
             if resp.status_code == 200 and len(resp.content) > 0:
                 return resp.content
         except requests.RequestException:
@@ -41,16 +49,40 @@ def synthesize(text: str, voice: str, speed: float) -> bytes | None:
     return None
 
 
-def check_status() -> bool:
-    """Check if any Kokoro endpoint is reachable."""
-    for endpoint in KOKORO_ENDPOINTS:
-        url = endpoint["url"]
-        # Try a HEAD or GET to the base URL to check reachability.
-        # For the OpenAI endpoint, the base is the speech endpoint itself.
+def _classify_request_error(exc: requests.RequestException) -> str:
+    msg = str(exc).lower()
+    if "timed out" in msg:
+        return "timeout"
+    if "connection refused" in msg:
+        return "connection_refused"
+    return "request_error"
+
+
+def check_status(mode: str = "cheap") -> tuple[bool, str]:
+    """Check if any Kokoro endpoint is reachable.
+
+    Args:
+        mode: "cheap" probes lightweight health URLs; "full" performs a
+            minimal synthesis probe.
+
+    Returns:
+        tuple[bool, str]: (reachable, reason).
+    """
+    if mode == "full":
+        audio = synthesize("hi", "af_heart", 1.0)
+        if audio:
+            return True, "synthesis_ok"
+        return False, "synthesis_failed"
+
+    last_reason = "no_endpoints_reachable"
+    for url in KOKORO_HEALTH_URLS:
         try:
-            resp = requests.get(url, timeout=(3, 5))
-            # Any response (even 4xx) means the server is up
-            return True
-        except requests.RequestException:
+            resp = requests.get(url, timeout=HEALTH_TIMEOUT)
+            if resp.status_code < 500:
+                return True, f"http_{resp.status_code}"
+            last_reason = f"http_{resp.status_code}"
+        except requests.RequestException as exc:
+            last_reason = _classify_request_error(exc)
             continue
-    return False
+
+    return False, last_reason

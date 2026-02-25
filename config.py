@@ -12,15 +12,22 @@ KOKORO_ENDPOINTS = [
     },
 ]
 
+# Health URLs used for low-cost reachability checks.
+# Avoid probing /v1/audio/speech with GET to prevent 405 log spam.
+KOKORO_HEALTH_URLS = [
+    "http://localhost:8880/web/",
+    "http://localhost:5002/",
+]
+
 # Default voice (Kokoro voice ID)
 # Good options: af_heart (best female US), bf_alice (best female UK), am_michael (male US)
-DEFAULT_VOICE = "af_heart"
+DEFAULT_VOICE = "bf_emma"
 
 # Default speed (1.0 = normal)
 DEFAULT_SPEED = 1.0
 
 # Global hotkey
-HOTKEY_COMBO = "<alt>+<shift>+z"
+HOTKEY_COMBO = "<ctrl>+<shift>+z"
 
 # Audio format
 AUDIO_FORMAT = "wav"
@@ -28,3 +35,9 @@ SAMPLE_RATE = 24000
 
 # Pre-fetch next sentence while current one plays
 PREFETCH_ENABLED = True
+
+# HTTP timeouts
+REQUEST_TIMEOUT_CONNECT_S = 3
+REQUEST_TIMEOUT_READ_S = 30
+HEALTH_TIMEOUT_CONNECT_S = 2
+HEALTH_TIMEOUT_READ_S = 3

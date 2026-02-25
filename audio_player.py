@@ -28,6 +28,7 @@ class AudioPlayer:
         self._playing = False
         self._stopped = False  # True after stop() — no more playback
         self._lock = threading.Lock()
+        self._generation = 0
 
         self._on_sentence_change_cb = None
         self._on_playback_done_cb = None
@@ -37,10 +38,12 @@ class AudioPlayer:
     # -- Public API --
 
     def load_sentences(self, sentences: list[str]) -> None:
-        self._sentences = sentences
-        self._current_idx = 0
-        self._audio_cache.clear()
-        self._stopped = False
+        with self._lock:
+            self._sentences = sentences
+            self._current_idx = 0
+            self._audio_cache.clear()
+            self._stopped = False
+            self._generation += 1
 
     def play(self) -> None:
         """Start or resume playback from current sentence."""
@@ -48,6 +51,8 @@ class AudioPlayer:
             if self._stopped or not self._sentences:
                 return
             self._playing = True
+            idx = self._current_idx
+            generation = self._generation
 
         # If we have a paused stream with remaining samples, resume it
         if self._stream is not None and self._current_samples is not None:
@@ -55,7 +60,7 @@ class AudioPlayer:
             return
 
         # Otherwise, start playing the current sentence
-        self._play_sentence(self._current_idx)
+        self._play_sentence(idx, generation)
 
     def pause(self) -> None:
         with self._lock:
@@ -74,16 +79,19 @@ class AudioPlayer:
             if self._current_idx >= len(self._sentences) - 1:
                 # At last sentence — stop playback
                 self._playing = False
+                self._generation += 1
                 self._stop_stream()
                 if self._on_playback_done_cb:
                     self._on_playback_done_cb()
                 return
             self._current_idx += 1
             idx = self._current_idx
+            self._generation += 1
+            generation = self._generation
 
         self._stop_stream()
         self._notify_sentence_change()
-        self._play_sentence(idx)
+        self._play_sentence(idx, generation)
 
     def prev_sentence(self) -> None:
         with self._lock:
@@ -91,15 +99,18 @@ class AudioPlayer:
                 self._current_idx -= 1
             # else: restart current sentence (index stays at 0)
             idx = self._current_idx
+            self._generation += 1
+            generation = self._generation
 
         self._stop_stream()
         self._notify_sentence_change()
-        self._play_sentence(idx)
+        self._play_sentence(idx, generation)
 
     def stop(self) -> None:
         with self._lock:
             self._playing = False
             self._stopped = True
+            self._generation += 1
         self._stop_stream()
         self._audio_cache.clear()
 
@@ -125,40 +136,44 @@ class AudioPlayer:
 
     # -- Internal --
 
-    def _play_sentence(self, idx: int) -> None:
+    def _play_sentence(self, idx: int, generation: int) -> None:
         """Fetch audio for sentence idx (if not cached) and play it."""
         threading.Thread(
-            target=self._play_sentence_worker, args=(idx,), daemon=True
+            target=self._play_sentence_worker, args=(idx, generation), daemon=True
         ).start()
 
-    def _play_sentence_worker(self, idx: int) -> None:
+    def _play_sentence_worker(self, idx: int, generation: int) -> None:
         with self._lock:
-            if self._stopped:
+            if self._stopped or generation != self._generation:
                 return
 
         samples = self._get_audio(idx)
         if samples is None:
             # TTS failed — skip to next sentence
             with self._lock:
+                if self._stopped or generation != self._generation:
+                    return
                 if idx < len(self._sentences) - 1:
                     self._current_idx = idx + 1
                     next_idx = self._current_idx
+                    self._generation += 1
+                    next_generation = self._generation
                 else:
                     self._playing = False
                     if self._on_playback_done_cb:
                         self._on_playback_done_cb()
                     return
             self._notify_sentence_change()
-            self._play_sentence(next_idx)
+            self._play_sentence(next_idx, next_generation)
             return
 
         # Start pre-fetching next sentence
         if PREFETCH_ENABLED and idx + 1 < len(self._sentences):
-            self._prefetch(idx + 1)
+            self._prefetch(idx + 1, generation)
 
         # Play the audio
         with self._lock:
-            if self._stopped or self._current_idx != idx:
+            if self._stopped or self._current_idx != idx or generation != self._generation:
                 return  # Navigation happened while we were fetching
             self._current_samples = samples
             self._play_pos = 0
@@ -199,7 +214,7 @@ class AudioPlayer:
                 blocksize=1024,
             )
             with self._lock:
-                if self._stopped or self._current_idx != idx:
+                if self._stopped or self._current_idx != idx or generation != self._generation:
                     return
                 self._stream = stream
 
@@ -212,7 +227,7 @@ class AudioPlayer:
                 self._stream = None
                 self._current_samples = None
 
-                if self._stopped or self._current_idx != idx:
+                if self._stopped or self._current_idx != idx or generation != self._generation:
                     return
 
                 # Auto-advance to next sentence
@@ -220,6 +235,8 @@ class AudioPlayer:
                     if idx + 1 < len(self._sentences):
                         self._current_idx += 1
                         next_idx = self._current_idx
+                        self._generation += 1
+                        next_generation = self._generation
                     else:
                         self._playing = False
                         if self._on_playback_done_cb:
@@ -227,7 +244,7 @@ class AudioPlayer:
                         return
 
             self._notify_sentence_change()
-            self._play_sentence(next_idx)
+            self._play_sentence(next_idx, next_generation)
 
         except Exception:
             # Audio device error — stop gracefully
@@ -273,13 +290,21 @@ class AudioPlayer:
         except Exception:
             return None
 
-    def _prefetch(self, idx: int) -> None:
+    def _prefetch(self, idx: int, generation: int) -> None:
         """Pre-fetch audio for sentence idx in a background thread."""
         if idx in self._audio_cache:
             return
-        t = threading.Thread(target=self._get_audio, args=(idx,), daemon=True)
+        t = threading.Thread(
+            target=self._prefetch_worker, args=(idx, generation), daemon=True
+        )
         t.start()
         self._prefetch_thread = t
+
+    def _prefetch_worker(self, idx: int, generation: int) -> None:
+        with self._lock:
+            if self._stopped or generation != self._generation:
+                return
+        self._get_audio(idx)
 
     def _stop_stream(self) -> None:
         """Stop and close the current audio stream."""

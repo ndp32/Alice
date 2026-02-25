@@ -3,6 +3,7 @@
 import threading
 
 import rumps
+from AppKit import NSBlockOperation, NSOperationQueue
 
 import tts_client
 from audio_player import AudioPlayer
@@ -11,7 +12,7 @@ from control_panel import ControlPanel
 from hotkey import HotkeyListener
 from text_utils import get_selected_text, split_sentences
 
-VOICES = ["af_heart", "bf_alice", "am_michael"]
+VOICES = ["af_heart", "bf_alice", "bf_emma", "am_michael"]
 SPEEDS = [0.8, 1.0, 1.2, 1.5]
 
 
@@ -87,36 +88,28 @@ class KokoroReaderApp(rumps.App):
         """Called when ⌥⇧Z is pressed. Runs on hotkey thread."""
         # Toggle: if playing, stop
         if self._player and self._player.is_playing:
-            self._stop_playback()
+            self._run_on_main(self._stop_playback)
             return
 
         # Get selected text
         text = get_selected_text()
         if not text:
-            rumps.notification(
-                "Kokoro Reader", "", "No text selected.", sound=False
-            )
+            self._notify("No text selected.")
             return
 
         sentences = split_sentences(text)
         if not sentences:
-            rumps.notification(
-                "Kokoro Reader", "", "No text selected.", sound=False
-            )
+            self._notify("No text selected.")
             return
 
         # Check server
-        if not tts_client.check_status():
-            rumps.notification(
-                "Kokoro Reader",
-                "",
-                "Kokoro TTS not found. Start the Kokoro server first.",
-                sound=False,
-            )
+        reachable, _reason = tts_client.check_status()
+        if not reachable:
+            self._notify("Kokoro TTS not found. Start the Kokoro server first.")
             return
 
         # Start playback
-        self._start_playback(sentences)
+        self._run_on_main(lambda: self._start_playback(sentences))
 
     def _start_playback(self, sentences: list[str]):
         # Stop any existing playback
@@ -150,7 +143,23 @@ class KokoroReaderApp(rumps.App):
             self._player.stop()
             self._player = None
         if self._panel:
+            self._panel.set_playing(False)
             self._panel.hide()
+
+    def _notify(self, message: str) -> None:
+        def _safe_notify():
+            try:
+                rumps.notification("Kokoro Reader", "", message, sound=False)
+            except Exception:
+                # pyenv Python builds may not have Info.plist/CFBundleIdentifier.
+                # In that case, skip macOS notification instead of crashing.
+                print(f"[Kokoro Reader] {message}", flush=True)
+
+        self._run_on_main(_safe_notify)
+
+    def _run_on_main(self, block) -> None:
+        op = NSBlockOperation.blockOperationWithBlock_(block)
+        NSOperationQueue.mainQueue().addOperation_(op)
 
     def _on_sentence_change(self, current_idx: int, total: int):
         if self._panel:
@@ -164,9 +173,12 @@ class KokoroReaderApp(rumps.App):
     def _check_kokoro_status(self, _):
         """Periodically check if Kokoro TTS is reachable."""
         def _check():
-            reachable = tts_client.check_status()
-            label = "Kokoro: Connected ✅" if reachable else "Kokoro: Not found ❌"
-            self._status_item.title = label
+            reachable, reason = tts_client.check_status()
+            if reachable:
+                label = "Kokoro: Connected ✅"
+            else:
+                label = f"Kokoro: Not found ❌ ({reason})"
+            self._run_on_main(lambda: setattr(self._status_item, "title", label))
 
         threading.Thread(target=_check, daemon=True).start()
 
