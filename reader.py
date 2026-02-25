@@ -74,6 +74,10 @@ class KokoroReaderApp(rumps.App):
 
     def _on_voice_select(self, sender):
         self._voice = sender.title
+        if self._player:
+            self._player.set_voice(self._voice)
+        if self._panel:
+            self._panel.set_voice(self._voice)
         # Update checkmarks
         voice_menu = self.menu["Voice"]
         for key in voice_menu:
@@ -81,6 +85,10 @@ class KokoroReaderApp(rumps.App):
 
     def _on_speed_select(self, sender):
         self._speed = float(sender.title.rstrip("x"))
+        if self._player:
+            self._player.set_speed(self._speed)
+        if self._panel:
+            self._panel.set_speed(self._speed)
         speed_menu = self.menu["Speed"]
         for key in speed_menu:
             speed_menu[key].state = 1 if key == sender.title else 0
@@ -136,7 +144,7 @@ class KokoroReaderApp(rumps.App):
 
         # Create panel if needed (lazy init — must happen after NSApp is running)
         if self._panel is None:
-            self._panel = ControlPanel()
+            self._panel = ControlPanel(VOICES, SPEEDS)
 
         player = AudioPlayer(tts_client, self._voice, self._speed)
         player.load_sentences(sentences)
@@ -148,9 +156,14 @@ class KokoroReaderApp(rumps.App):
             on_prev=player.prev_sentence,
             on_toggle=player.toggle_play_pause,
             on_next=player.next_sentence,
+            on_seek=player.seek_sentence,
+            on_speed_change=self._on_panel_speed_change,
+            on_voice_change=self._on_panel_voice_change,
             on_close=self._stop_playback,
         )
         self._panel.update_progress(0, len(sentences))
+        self._panel.set_speed(self._speed)
+        self._panel.set_voice(self._voice)
         self._panel.set_playing(True)
         self._panel.show()
 
@@ -186,6 +199,25 @@ class KokoroReaderApp(rumps.App):
     def _on_playback_done(self):
         if self._panel:
             self._panel.set_playing(False)
+
+    def _on_panel_speed_change(self, speed: float):
+        self._speed = speed
+        if self._panel:
+            self._panel.set_speed(speed)
+        speed_menu = self.menu["Speed"]
+        target = f"{speed}x"
+        for key in speed_menu:
+            speed_menu[key].state = 1 if key == target else 0
+        if self._player:
+            self._player.set_speed(speed)
+
+    def _on_panel_voice_change(self, voice: str):
+        self._voice = voice
+        voice_menu = self.menu["Voice"]
+        for key in voice_menu:
+            voice_menu[key].state = 1 if key == voice else 0
+        if self._player:
+            self._player.set_voice(voice)
 
     def _set_backend_starting(self, value: bool) -> None:
         def _set():

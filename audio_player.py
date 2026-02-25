@@ -18,7 +18,7 @@ class AudioPlayer:
 
         self._sentences: list[str] = []
         self._current_idx = 0
-        self._audio_cache: dict[int, np.ndarray] = {}  # idx -> PCM samples
+        self._audio_cache: dict[tuple[int, str, float], np.ndarray] = {}
         self._sample_rate = 24000
 
         self._stream: sd.OutputStream | None = None
@@ -114,6 +114,28 @@ class AudioPlayer:
         self._stop_stream()
         self._audio_cache.clear()
 
+    def seek_sentence(self, idx: int) -> None:
+        with self._lock:
+            if not self._sentences:
+                return
+            clamped_idx = max(0, min(idx, len(self._sentences) - 1))
+            self._current_idx = clamped_idx
+            generation = self._generation = self._generation + 1
+            should_play = self._playing
+
+        self._stop_stream()
+        self._notify_sentence_change()
+        if should_play:
+            self._play_sentence(clamped_idx, generation)
+
+    def set_speed(self, speed: float) -> None:
+        with self._lock:
+            self._speed = speed
+
+    def set_voice(self, voice: str) -> None:
+        with self._lock:
+            self._voice = voice
+
     def on_sentence_change(self, callback) -> None:
         """Register callback: callback(current_idx, total_count)."""
         self._on_sentence_change_cb = callback
@@ -136,18 +158,21 @@ class AudioPlayer:
 
     # -- Internal --
 
-    def _play_sentence(self, idx: int, generation: int) -> None:
+    def _play_sentence(self, idx: int, generation: int, voice: str | None = None, speed: float | None = None) -> None:
         """Fetch audio for sentence idx (if not cached) and play it."""
+        with self._lock:
+            use_voice = voice or self._voice
+            use_speed = speed if speed is not None else self._speed
         threading.Thread(
-            target=self._play_sentence_worker, args=(idx, generation), daemon=True
+            target=self._play_sentence_worker, args=(idx, generation, use_voice, use_speed), daemon=True
         ).start()
 
-    def _play_sentence_worker(self, idx: int, generation: int) -> None:
+    def _play_sentence_worker(self, idx: int, generation: int, voice: str, speed: float) -> None:
         with self._lock:
             if self._stopped or generation != self._generation:
                 return
 
-        samples = self._get_audio(idx)
+        samples = self._get_audio(idx, voice, speed)
         if samples is None:
             # TTS failed — skip to next sentence
             with self._lock:
@@ -169,7 +194,7 @@ class AudioPlayer:
 
         # Start pre-fetching next sentence
         if PREFETCH_ENABLED and idx + 1 < len(self._sentences):
-            self._prefetch(idx + 1, generation)
+            self._prefetch(idx + 1, generation, voice, speed)
 
         # Play the audio
         with self._lock:
@@ -252,20 +277,21 @@ class AudioPlayer:
                 self._playing = False
                 self._stream = None
 
-    def _get_audio(self, idx: int) -> np.ndarray | None:
+    def _get_audio(self, idx: int, voice: str, speed: float) -> np.ndarray | None:
         """Get PCM samples for sentence idx, using cache if available."""
-        if idx in self._audio_cache:
-            return self._audio_cache[idx]
+        cache_key = (idx, voice, speed)
+        if cache_key in self._audio_cache:
+            return self._audio_cache[cache_key]
 
         wav_bytes = self._tts.synthesize(
-            self._sentences[idx], self._voice, self._speed
+            self._sentences[idx], voice, speed
         )
         if wav_bytes is None:
             return None
 
         samples = self._decode_wav(wav_bytes)
         if samples is not None:
-            self._audio_cache[idx] = samples
+            self._audio_cache[cache_key] = samples
         return samples
 
     def _decode_wav(self, wav_bytes: bytes) -> np.ndarray | None:
@@ -290,21 +316,21 @@ class AudioPlayer:
         except Exception:
             return None
 
-    def _prefetch(self, idx: int, generation: int) -> None:
+    def _prefetch(self, idx: int, generation: int, voice: str, speed: float) -> None:
         """Pre-fetch audio for sentence idx in a background thread."""
-        if idx in self._audio_cache:
+        if (idx, voice, speed) in self._audio_cache:
             return
         t = threading.Thread(
-            target=self._prefetch_worker, args=(idx, generation), daemon=True
+            target=self._prefetch_worker, args=(idx, generation, voice, speed), daemon=True
         )
         t.start()
         self._prefetch_thread = t
 
-    def _prefetch_worker(self, idx: int, generation: int) -> None:
+    def _prefetch_worker(self, idx: int, generation: int, voice: str, speed: float) -> None:
         with self._lock:
             if self._stopped or generation != self._generation:
                 return
-        self._get_audio(idx)
+        self._get_audio(idx, voice, speed)
 
     def _stop_stream(self) -> None:
         """Stop and close the current audio stream."""
