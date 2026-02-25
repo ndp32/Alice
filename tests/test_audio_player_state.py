@@ -99,6 +99,26 @@ class AudioPlayerStateTests(unittest.TestCase):
 
         self.assertEqual(self.tts.calls[-1], ("first", "bf_alice", 1.2))
 
+    def test_estimate_word_end_times_monotonic_and_ends_at_duration(self):
+        end_times = self.player._estimate_word_end_times(["hello", "world"], 1.0)
+        self.assertEqual(len(end_times), 2)
+        self.assertGreaterEqual(end_times[0], 0.0)
+        self.assertGreater(end_times[1], end_times[0])
+        self.assertAlmostEqual(end_times[-1], 1.0)
+
+    def test_word_index_for_time_handles_boundaries(self):
+        end_times = [0.2, 0.5, 1.0]
+        self.assertEqual(self.player._word_index_for_time(0.0, end_times), 0)
+        self.assertEqual(self.player._word_index_for_time(0.3, end_times), 1)
+        self.assertEqual(self.player._word_index_for_time(1.2, end_times), 2)
+        self.assertEqual(self.player._word_index_for_time(0.1, []), -1)
+
+    def test_on_word_change_callback_receives_payload(self):
+        cb = MagicMock()
+        self.player.on_word_change(cb)
+        self.player._notify_word_change(0, 2, 1, ["hi", "there"], "hi there")
+        cb.assert_called_once_with(0, 2, 1, ["hi", "there"], "hi there")
+
 
 if __name__ == "__main__":
     unittest.main()

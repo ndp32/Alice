@@ -17,6 +17,8 @@ from AppKit import (
     NSPopUpButton,
     NSScreen,
     NSSlider,
+    NSTextAlignmentCenter,
+    NSTextField,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
 )
@@ -32,7 +34,6 @@ class _PanelDelegate(NSObject):
         self._on_prev = None
         self._on_toggle = None
         self._on_next = None
-        self._on_seek = None
         self._on_speed_change = None
         self._on_voice_change = None
         self._on_close = None
@@ -50,11 +51,6 @@ class _PanelDelegate(NSObject):
     def nextClicked_(self, sender):
         if self._on_next:
             self._on_next()
-
-    def seekChanged_(self, sender):
-        if self._suppress_actions or not self._on_seek:
-            return
-        self._on_seek(int(sender.intValue()))
 
     def speedChanged_(self, sender):
         if self._suppress_actions or not self._on_speed_change:
@@ -77,16 +73,14 @@ class _PanelDelegate(NSObject):
 
 class ControlPanel:
     PANEL_WIDTH = 420
-    PANEL_HEIGHT = 150
+    PANEL_HEIGHT = 126
     SPEED_MIN = 0.6
     SPEED_MAX = 2.0
     SPEED_STEP = 0.05
 
     def __init__(self, voices: list[str], speeds: list[float]):
         self._panel = None
-        self._label = None
         self._play_btn = None
-        self._seek_slider = None
         self._speed_slider = None
         self._speed_value_label = None
         self._voice_popup = None
@@ -116,29 +110,13 @@ class ControlPanel:
         )
 
         content = self._panel.contentView()
-        content_h = self.PANEL_HEIGHT - 22
-
-        self._label = self._make_label(NSMakeRect(12, content_h - 22, self.PANEL_WIDTH - 24, 18), "Sentence 1 of 1")
-        content.addSubview_(self._label)
-
-        self._seek_slider = NSSlider.alloc().initWithFrame_(
-            NSMakeRect(14, content_h - 48, self.PANEL_WIDTH - 28, 18)
-        )
-        self._seek_slider.setMinValue_(0)
-        self._seek_slider.setMaxValue_(0)
-        self._seek_slider.setIntValue_(0)
-        self._seek_slider.setNumberOfTickMarks_(1)
-        self._seek_slider.setAllowsTickMarkValuesOnly_(True)
-        self._seek_slider.setTarget_(self._delegate)
-        self._seek_slider.setAction_("seekChanged:")
-        content.addSubview_(self._seek_slider)
 
         btn_w = 50
         btn_h = 28
         spacing = 10
         total_w = btn_w * 3 + spacing * 2
         start_x = (self.PANEL_WIDTH - total_w) / 2
-        btn_y = 40
+        btn_y = 30
 
         prev_btn = self._make_button("⏮", NSMakeRect(start_x, btn_y, btn_w, btn_h), "prevClicked:")
         self._play_btn = self._make_button(
@@ -151,12 +129,10 @@ class ControlPanel:
         content.addSubview_(self._play_btn)
         content.addSubview_(next_btn)
 
-        speed_label = self._make_label(NSMakeRect(12, 16, 56, 18), "Speed")
+        speed_label = self._make_label(NSMakeRect(12, 16, 56, 18), "Speed", NSTextAlignmentCenter)
         content.addSubview_(speed_label)
 
-        self._speed_slider = NSSlider.alloc().initWithFrame_(
-            NSMakeRect(68, 12, 140, 24)
-        )
+        self._speed_slider = NSSlider.alloc().initWithFrame_(NSMakeRect(68, 12, 140, 24))
         self._speed_slider.setMinValue_(self.SPEED_MIN)
         self._speed_slider.setMaxValue_(self.SPEED_MAX)
         self._speed_slider.setNumberOfTickMarks_(0)
@@ -166,10 +142,10 @@ class ControlPanel:
         self._speed_slider.setAction_("speedChanged:")
         content.addSubview_(self._speed_slider)
 
-        self._speed_value_label = self._make_label(NSMakeRect(210, 16, 40, 18), "1.0x")
+        self._speed_value_label = self._make_label(NSMakeRect(210, 16, 40, 18), "1.0x", NSTextAlignmentCenter)
         content.addSubview_(self._speed_value_label)
 
-        voice_label = self._make_label(NSMakeRect(258, 16, 44, 18), "Voice")
+        voice_label = self._make_label(NSMakeRect(258, 16, 44, 18), "Voice", NSTextAlignmentCenter)
         content.addSubview_(voice_label)
 
         self._voice_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
@@ -181,9 +157,7 @@ class ControlPanel:
         self._voice_popup.setAction_("voiceChanged:")
         content.addSubview_(self._voice_popup)
 
-    def _make_label(self, frame, text):
-        from AppKit import NSTextAlignmentCenter, NSTextField
-
+    def _make_label(self, frame, text, alignment):
         label = NSTextField.alloc().initWithFrame_(frame)
         label.setStringValue_(text)
         label.setEditable_(False)
@@ -191,7 +165,7 @@ class ControlPanel:
         label.setDrawsBackground_(False)
         label.setTextColor_(NSColor.whiteColor())
         label.setFont_(NSFont.systemFontOfSize_(12))
-        label.setAlignment_(NSTextAlignmentCenter)
+        label.setAlignment_(alignment)
         return label
 
     def _make_button(self, title, frame, action_sel):
@@ -210,18 +184,7 @@ class ControlPanel:
         self._run_on_main(lambda: self._panel.orderOut_(None))
 
     def update_progress(self, current: int, total: int):
-        def _update():
-            safe_total = max(total, 1)
-            safe_current = max(0, min(current, safe_total - 1))
-            self._delegate._suppress_actions = True
-            self._label.setStringValue_(f"Sentence {safe_current + 1} of {safe_total}")
-            self._seek_slider.setMaxValue_(safe_total - 1)
-            self._seek_slider.setNumberOfTickMarks_(safe_total)
-            self._seek_slider.setEnabled_(safe_total > 1)
-            self._seek_slider.setIntValue_(safe_current)
-            self._delegate._suppress_actions = False
-
-        self._run_on_main(_update)
+        _ = (current, total)
 
     def set_playing(self, is_playing: bool):
         def _update():
@@ -252,7 +215,6 @@ class ControlPanel:
         on_prev,
         on_toggle,
         on_next,
-        on_seek,
         on_speed_change,
         on_voice_change,
         on_close,
@@ -260,7 +222,6 @@ class ControlPanel:
         self._delegate._on_prev = on_prev
         self._delegate._on_toggle = on_toggle
         self._delegate._on_next = on_next
-        self._delegate._on_seek = on_seek
         self._delegate._on_speed_change = on_speed_change
         self._delegate._on_voice_change = on_voice_change
         self._delegate._on_close = on_close

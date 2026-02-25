@@ -1,6 +1,7 @@
 """Audio playback engine with sentence queue, pre-fetching, and navigation."""
 
 import io
+import re
 import threading
 import wave
 
@@ -31,9 +32,13 @@ class AudioPlayer:
         self._generation = 0
 
         self._on_sentence_change_cb = None
+        self._on_word_change_cb = None
         self._on_playback_done_cb = None
 
         self._prefetch_thread: threading.Thread | None = None
+        self._word_tokens: list[str] = []
+        self._word_end_times_s: list[float] = []
+        self._last_word_idx = -1
 
     # -- Public API --
 
@@ -144,6 +149,10 @@ class AudioPlayer:
         """Register callback: callback() when all sentences are done."""
         self._on_playback_done_cb = callback
 
+    def on_word_change(self, callback) -> None:
+        """Register callback: callback(sentence_idx, total, word_idx, words, sentence_text)."""
+        self._on_word_change_cb = callback
+
     @property
     def current_index(self) -> int:
         return self._current_idx
@@ -204,12 +213,16 @@ class AudioPlayer:
             self._play_pos = 0
 
         self._notify_sentence_change()
+        initial_word_payload = self._prepare_word_progress(idx, samples)
+        if initial_word_payload:
+            self._notify_word_change(*initial_word_payload)
 
         # Create and start output stream
         try:
             finished_event = threading.Event()
 
             def callback(outdata, frames, time_info, status):
+                emit_payload = None
                 with self._lock:
                     pos = self._play_pos
                     smp = self._current_samples
@@ -230,6 +243,22 @@ class AudioPlayer:
                     else:
                         outdata[:, 0] = smp[pos:end]
                         self._play_pos = end
+                        if self._word_tokens and self._sample_rate > 0:
+                            elapsed_s = self._play_pos / self._sample_rate
+                            word_idx = self._word_index_for_time(
+                                elapsed_s, self._word_end_times_s
+                            )
+                            if word_idx != self._last_word_idx:
+                                self._last_word_idx = word_idx
+                                emit_payload = (
+                                    self._current_idx,
+                                    len(self._sentences),
+                                    word_idx,
+                                    list(self._word_tokens),
+                                    self._sentences[self._current_idx],
+                                )
+                if emit_payload:
+                    self._notify_word_change(*emit_payload)
 
             stream = sd.OutputStream(
                 samplerate=self._sample_rate,
@@ -344,7 +373,80 @@ class AudioPlayer:
             self._stream = None
         self._current_samples = None
         self._play_pos = 0
+        self._word_tokens = []
+        self._word_end_times_s = []
+        self._last_word_idx = -1
 
     def _notify_sentence_change(self) -> None:
         if self._on_sentence_change_cb:
             self._on_sentence_change_cb(self._current_idx, len(self._sentences))
+
+    def _notify_word_change(
+        self,
+        sentence_idx: int,
+        total: int,
+        word_idx: int,
+        words: list[str],
+        sentence_text: str,
+    ) -> None:
+        if self._on_word_change_cb:
+            self._on_word_change_cb(sentence_idx, total, word_idx, words, sentence_text)
+
+    def _prepare_word_progress(
+        self, sentence_idx: int, samples: np.ndarray
+    ) -> tuple[int, int, int, list[str], str] | None:
+        sentence_text = self._sentences[sentence_idx]
+        words = self._tokenize_sentence(sentence_text)
+        duration_s = len(samples) / self._sample_rate if self._sample_rate > 0 else 0.0
+        end_times = self._estimate_word_end_times(words, duration_s)
+
+        with self._lock:
+            self._word_tokens = words
+            self._word_end_times_s = end_times
+            self._last_word_idx = 0 if words else -1
+
+        if not words:
+            return None
+        return (
+            sentence_idx,
+            len(self._sentences),
+            0,
+            list(words),
+            sentence_text,
+        )
+
+    def _tokenize_sentence(self, sentence: str) -> list[str]:
+        return sentence.split()
+
+    def _estimate_word_end_times(
+        self, words: list[str], duration_s: float
+    ) -> list[float]:
+        if not words:
+            return []
+        if duration_s <= 0:
+            return [0.0 for _ in words]
+
+        weights = []
+        for word in words:
+            alnum_len = len(re.sub(r"[^A-Za-z0-9]", "", word))
+            weights.append(float(max(alnum_len, 1)))
+        total_weight = sum(weights) or float(len(words))
+
+        cumulative = 0.0
+        end_times = []
+        for weight in weights:
+            cumulative += duration_s * (weight / total_weight)
+            end_times.append(cumulative)
+        if end_times:
+            end_times[-1] = duration_s
+        return end_times
+
+    def _word_index_for_time(self, elapsed_s: float, end_times_s: list[float]) -> int:
+        if not end_times_s:
+            return -1
+        if elapsed_s <= 0:
+            return 0
+        for idx, end_s in enumerate(end_times_s):
+            if elapsed_s <= end_s:
+                return idx
+        return len(end_times_s) - 1

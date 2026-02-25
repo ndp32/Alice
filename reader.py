@@ -156,7 +156,6 @@ class KokoroReaderApp(rumps.App):
             on_prev=player.prev_sentence,
             on_toggle=player.toggle_play_pause,
             on_next=player.next_sentence,
-            on_seek=player.seek_sentence,
             on_speed_change=self._on_panel_speed_change,
             on_voice_change=self._on_panel_voice_change,
             on_close=self._stop_playback,
