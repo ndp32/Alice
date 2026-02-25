@@ -5,3 +5,4 @@ pynput>=1.7.6
 requests>=2.31.0
 sounddevice>=0.4.6
 numpy>=1.24.0
+py2app>=0.28.8

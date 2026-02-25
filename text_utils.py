@@ -3,6 +3,7 @@
 import re
 import time
 
+from ApplicationServices import AXIsProcessTrusted
 from AppKit import NSPasteboard, NSStringPboardType
 from Quartz import (
     CGEventCreateKeyboardEvent,
@@ -55,6 +56,14 @@ def _simulate_cmd_c() -> None:
     CGEventSetFlags(key_up, kCGEventFlagMaskCommand)
     CGEventPost(kCGHIDEventTap, key_down)
     CGEventPost(kCGHIDEventTap, key_up)
+
+
+def has_accessibility_permission() -> bool:
+    """Return whether this process is trusted for Accessibility control."""
+    try:
+        return bool(AXIsProcessTrusted())
+    except Exception:
+        return False
 
 
 def get_selected_text(copy_delay_s: float = 0.15, min_chars: int = 1) -> str | None:
